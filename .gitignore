@@ -136,4 +136,11 @@ cython_debug/
 
 # OS Specific
 .DS_Store
+Thumbs.dbGEMINI.md
+MEMORY.md
+.k-vpn/
+
+# Correct explicit entries; the older concatenated line above is retained.
 Thumbs.db
+GEMINI.md
+/AGENTS.md

@@ -1,7 +1,7 @@
 [project]
 name = "k-vpn"
-version = "1.0.0"
-description = "Automated CLI tool to fetch and connect to global VPN Gate servers securely."
+version = "1.2.0"
+description = "Linux OpenVPN relay selector with verified egress, measured throughput and XDG configuration."
 readme = "README.md"
 authors = [
     { name = "KpihX" }
@@ -11,11 +11,18 @@ requires-python = ">=3.12"
 dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
-    "requests>=2.0.0"
+    "requests>=2.0.0",
+    "urllib3>=2.8.0",
 ]
 
 [project.scripts]
 k-vpn = "k_vpn.main:app"
+
+[project.urls]
+Repository = "https://github.com/kpihx-labs/k-vpn"
+GitLab = "https://gitlab.com/kpihx-labs/vpns/k-vpn"
+Issues = "https://github.com/kpihx-labs/k-vpn/issues"
+Changelog = "https://github.com/kpihx-labs/k-vpn/blob/master/CHANGELOG.md"
 
 [build-system]
 requires = [
