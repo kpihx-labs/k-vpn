@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.1 - 2026-10-24
+
+- Add `make purge` for the installed uv tool and k-vpn live XDG state while retaining the source checkout.
+
 ## 3.0.0 - 2026-10-24
 
 - Require the explicit `connect` subcommand; bare invocation displays help.

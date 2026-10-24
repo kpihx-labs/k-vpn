@@ -1,6 +1,6 @@
 SHELL := /bin/zsh
 .DEFAULT_GOAL := help
-.PHONY: help sync check uv-link build publish push
+.PHONY: help sync check uv-link build publish push purge
 help:
 	@printf '%s\n' 'sync: synchronize the project environment' 'check: lint, types and offline regression tests' 'uv-link: install this checkout in editable mode' 'build: validate and build sdist/wheel in dist/' 'publish: build and publish to PyPI (with-env make publish)' 'push: push the current branch to every remote in parallel using xargs'
 sync:
@@ -24,3 +24,10 @@ push:
 	remotes="$$(git remote)"; \
 	test -n "$$remotes" || { printf '%s\n' 'No Git remotes configured.' >&2; exit 1; }; \
 	printf '%s\n' "$$remotes" | tr '\n' '\0' | xargs -0 -r -P 0 -I '{}' git push -- '{}' "$$branch"
+purge:
+	@set -e; \
+	for path in "$$HOME/.config/k-vpn" "$$HOME/.cache/k-vpn" "$$HOME/.local/share/uv/tools/k-vpn" "$$HOME/.local/bin/k-vpn"; do \
+		if test -e "$$path"; then printf '%s\n' "purging $$path"; rm -r "$$path"; fi; \
+	done; \
+	uv tool uninstall k-vpn || printf '%s\n' 'k-vpn uv tool was not installed'; \
+	printf '%s\n' 'k-vpn live state removed; source checkout remains intact.'
