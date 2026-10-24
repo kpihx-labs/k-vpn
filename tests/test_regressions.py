@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +16,13 @@ from typer.testing import CliRunner
 
 from k_vpn import config, probes, profiles
 from k_vpn import main as vpn
+
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def rendered_text(output: str) -> str:
+    """Normalize Rich terminal formatting for content assertions."""
+    return " ".join(ANSI_ESCAPE.sub("", output).split())
 
 
 class ProfileTests(unittest.TestCase):
@@ -332,7 +340,7 @@ class XDGTests(unittest.TestCase):
         ):
             result = CliRunner().invoke(vpn.app, [], input="1\n")
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("no benchmark", result.output)
+        self.assertIn("no benchmark", rendered_text(result.output))
         self.assertEqual(connect.call_args.kwargs["bench"], 0)
         self.assertEqual(connect.call_args.kwargs["min_speed"], 0)
 
@@ -451,8 +459,9 @@ class ConnectionBehaviorTests(unittest.TestCase):
                 "Japan", servers, 0, 0, False, directory, attempts=2
             )
         self.assertEqual(connect.call_count, 2)
-        self.assertIn("All 2 connection attempts failed", output.get())
-        self.assertIn("4 relays were listed", output.get())
+        rendered = rendered_text(output.get())
+        self.assertIn("All 2 connection attempts failed", rendered)
+        self.assertIn("4 relays were listed", rendered)
 
     def test_normal_session_waits_without_a_speed_probe(self):
         process = Mock()
@@ -624,7 +633,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(get.call_args_list[0].args[2])
             self.assertEqual(get.call_args_list[1].args[0], "http://b.test")
         self.assertNotIn("Mirror unavailable", output.get())
-        self.assertIn("HTTP (not authenticated)", output.get())
+        self.assertIn("HTTP (not authenticated)", rendered_text(output.get()))
 
     def test_default_discovery_does_not_probe_https_before_working_mirror(self):
         with patch.object(vpn, "_get_bounded", return_value=self.response()) as get:
