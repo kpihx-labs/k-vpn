@@ -1,7 +1,7 @@
 # k-vpn
 
-Linux CLI for selecting public VPN Gate relays, verifying the HTTPS exit and
-measuring real download throughput before connecting with OpenVPN.
+Linux CLI for connecting to public VPN Gate relays with OpenVPN. Benchmarking
+and speed monitoring are optional and require explicit command-line options.
 
 The client is locally controlled; the exit fleet is not self-hosted. Country
 availability and bandwidth change with volunteer relays. No anonymity, universal
@@ -27,11 +27,15 @@ Editable installation uses this checkout directly; moving it requires relinking.
 ## Use
 
 ```bash
-k-vpn                                      # interactive country table
-k-vpn --country JP --bench 6 --test-only    # benchmark, then close all test tunnels
-k-vpn --country Japan --bench 6 --min-speed 0.5
-k-vpn --country JP --server 122.133.152.245 --bench 1 --test-only
-k-vpn --country JP --bench 4 --test-only --tuning balanced
+k-vpn                                      # choose a country and connect directly
+k-vpn status                               # current route, public IP and indicative location
+k-vpn status --speed                       # explicit short download and upload measurement
+k-vpn --country JP                         # direct connection; no speed/IP probes
+k-vpn -c JP -a 15                           # try up to 15 relays, stopping on success
+k-vpn -c JP -b 6 -t                         # benchmark, then close all test tunnels
+k-vpn -c Japan -b 6 -m 0.5
+k-vpn -c JP -s 122.133.152.245 -b 1 -t
+k-vpn -c JP -b 4 -t -T balanced
 ```
 
 Sudo asks for a password automatically when needed. A separate manual
@@ -40,19 +44,30 @@ authentication command is not required. Ctrl-C closes the owned session.
 | Option | Behavior |
 |---|---|
 | `--country`, `-c` | Match a country name or ISO code, not a changing menu index |
-| `--bench N` | Test up to N candidate profiles; zero skips benchmarking |
-| `--test-only` | Benchmark without retaining a connection; requires N greater than zero |
-| `--server IP` | Pin a relay only if it is still present in the current listing |
-| `--tuning native` | Preserve profile MTU/buffers; default, with authentication/cipher fixes |
-| `--tuning balanced` | Experimental UDP MTU/buffer tuning; no proven universal gain |
-| `--min-speed X` | Fail over after repeated unusable/slow probes; zero disables monitoring |
-| `--strict-discovery` | Forbid unauthenticated HTTP discovery fallback |
-| `--no-strict-discovery` | Explicitly allow the warned legacy HTTP fallback |
+| `--attempts N`, `-a N` | Maximum relay connection attempts, clipped to those listed; config default 5 |
+| `--bench N`, `-b N` | Explicitly test up to N candidate profiles; default zero/off |
+| `--test-only`, `-t` | Benchmark without retaining a connection; requires N greater than zero |
+| `--server IP`, `-s IP` | Pin a relay only if it is still present in the current listing |
+| `--tuning MODE`, `-T MODE` | `native` preserves profile MTU/buffers; `balanced` is experimental UDP tuning |
+| `--min-speed X`, `-m X` | Explicitly enable repeated speed probes/failover; default zero/off |
+| `--strict-discovery`, `-d` | Forbid unauthenticated HTTP relay-list fallback |
+| `--no-strict-discovery`, `-D` | Explicitly allow the warned legacy HTTP fallback |
 | `--insecure`, `-k` | Disable API TLS verification only; unsafe, does not disable DNS |
 
-Discovery first tries HTTPS. When a legacy HTTP mirror is used, the CLI warns
-that the relay list is unauthenticated. Root profile validation does not establish
-the list's origin. HTTPS destinations are verified independently.
+`k-vpn status` is independent of VPN Gate and OpenVPN: it observes the active
+IPv4 route of the system. It therefore works with direct Wi-Fi, Tailscale,
+OpenVPN, or another VPN implementation. `--speed` is explicit: it downloads from
+Cloudflare/OVH and uploads a bounded 1 MB in-memory HTTPS payload to Cloudflare.
+No test file is created. Use the installed `speedtest` CLI when you want a longer
+third-party download/upload benchmark with its selected server.
+
+For `status`, use `--speed` / `-s` and `--seconds N` / `-n N`.
+
+Discovery uses the historical working mirror order rather than forcing an HTTPS
+probe first. A successful HTTP retrieval produces one concise unauthenticated-list
+notice; failed attempts are detailed only when no mirror works. Strict discovery
+still permits HTTPS only and never disables certificate verification automatically.
+Root profile validation does not authenticate a relay list's origin.
 
 ## Configuration and files
 
@@ -74,36 +89,40 @@ The initial configuration is:
 
 ```json
 {
-  "bench": 10,
-  "min_speed": 3.0,
+  "attempts": 5,
   "tuning": "native",
   "strict_discovery": false
 }
 ```
 
-Explicit CLI flags override these preferences, including zero and false.
-For low-bandwidth relays, choose an appropriate monitoring threshold rather than
-assuming the default 3 Mbps is attainable.
+Explicit attempts/tuning/strict-discovery flags override these preferences. Old `bench`
+and `min_speed` keys are accepted but ignored: a previously generated config cannot
+silently enable downloads. Supply `--bench N` or `--min-speed X` on the invocation
+that should measure traffic. Plain connection makes no IP-service or speed-test
+request and reports only that OpenVPN initialized, not verified Internet egress.
 
 ## How selection works
 
 1. Fetch the current VPN Gate CSV; countries, relay IPs, reported speed and public
    OpenVPN profiles are live data, not a hardcoded country/server catalogue.
-2. Parse active profile directives, ignoring comments. Prefer useful transports
-   without discarding every non-web port; policy varies with the actual network.
+2. Parse active profile directives, ignoring comments. Restore historical provider
+   Score order; advertised speed and transport preferences do not override it.
 3. Reject hooks, plugins, external key files and unsupported profile directives
-   before privileged execution. Keep native certificate authentication; do not
-   inject vpn/vpn into a profile that does not request password authentication.
-4. Require a TUN route, interface-bound HTTPS, a valid public exit and received
+   before privileged execution. Restore the historical VPN Gate public vpn/vpn
+   authentication even if the supplied profile omits auth-user-pass. These are
+   relay credentials, not the user's sudo password.
+4. When benchmarking is explicitly requested, require a TUN route, interface-bound HTTPS, a valid public exit and received
    payload before reporting a speed. Distinguish authentication, connection,
    egress verification and download-host refusals. Try OVH after a failed
    Cloudflare measurement. Failures remain unmeasured, not zero Mbps.
-5. Keep the best freshly verified candidate in the selected country. Use a
-   private UID-restricted Unix control socket for shutdown, never killall.
+5. Without benchmarking, try candidates using profile/provider ranking and retain
+   the initialized connection; no transfer is required to accept it. With an
+   explicit benchmark, use the freshly measured candidates. Keep failover within
+   the chosen country. Use the private UID-restricted control socket for shutdown.
 
 `Advertised` is the provider's field, not a measurement from your device. Recent
-cached observations are scoped to uplink/profile/tuning and labelled; live
-selection always remeasures. There is no guaranteed advertised-to-real ratio.
+cached observations are scoped to uplink/profile/tuning and labelled; they do not
+trigger fresh measurements. There is no guaranteed advertised-to-real ratio.
 
 ## Evidence and limitations
 

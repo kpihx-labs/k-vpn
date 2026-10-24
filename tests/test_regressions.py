@@ -26,14 +26,19 @@ class ProfileTests(unittest.TestCase):
                 str(path), "/unused-public-vpngate-credentials", False
             )
 
-    def test_no_injected_auth(self):
-        self.assertNotIn("--auth-user-pass", self.command("client\nproto tcp\n"))
+    def test_historical_vpngate_credentials_without_profile_directive(self):
+        self.assertIn("--auth-user-pass", self.command("client\nproto tcp\n"))
 
     def test_requested_auth_retained(self):
         self.assertIn("--auth-user-pass", self.command("client\nauth-user-pass\n"))
 
-    def test_commented_auth_ignored(self):
-        self.assertNotIn("--auth-user-pass", self.command("# auth-user-pass\n"))
+    def test_commented_auth_cannot_override_credentials(self):
+        command = self.command("# auth-user-pass /untrusted\n")
+        self.assertNotIn("/untrusted", command)
+        self.assertEqual(
+            command[command.index("--auth-user-pass") + 1],
+            "/unused-public-vpngate-credentials",
+        )
 
     def test_legacy_cipher_only_when_profile_requests_it(self):
         self.assertIn("--data-ciphers-fallback", self.command("cipher AES-128-CBC\n"))
@@ -171,8 +176,9 @@ class XDGTests(unittest.TestCase):
             '{"bench": 2, "min_speed": 0.2, "tuning": "balanced", "strict_discovery": true}'
         )
         config.initialize()
-        self.assertEqual(config.load().bench, 2)
+        self.assertEqual(config.load().tuning, "balanced")
         self.assertTrue(config.load().strict_discovery)
+        self.assertIn('"bench": 2', path.read_text())
 
     def test_xdg_overrides(self):
         with patch.dict(
@@ -209,7 +215,7 @@ class XDGTests(unittest.TestCase):
     def test_session_wrapper_cleans_private_directory(self):
         observed = []
 
-        def inner(*arguments):
+        def inner(*arguments, **kwargs):
             observed.append(Path(arguments[-1]))
             self.assertTrue(observed[-1].is_dir())
             raise RuntimeError("cancelled")
@@ -244,8 +250,9 @@ class XDGTests(unittest.TestCase):
     def test_unknown_or_invalid_settings_are_rejected(self):
         config.initialize()
         for payload in (
-            {"bench": True},
-            {"min_speed": -1},
+            {"attempts": 0},
+            {"attempts": -1},
+            {"attempts": True},
             {"tuning": "magic"},
             {"strict_discovery": "yes"},
             {"unknown": 1},
@@ -256,8 +263,279 @@ class XDGTests(unittest.TestCase):
                 with self.assertRaises((ValueError, TypeError)):
                     config.load()
 
+    def test_cli_attempts_override_persistent_preference(self):
+        config.initialize()
+        config.config_file().write_text('{"attempts": 2}')
+        relay = {"CountryLong": "Japan", "CountryShort": "JP"}
+        with (
+            patch.object(vpn, "fetch_vpn_servers", return_value=[relay]),
+            patch.object(vpn, "connect_to_country") as connect,
+        ):
+            result = CliRunner().invoke(
+                vpn.app, ["--country", "JP", "--attempts", "12"]
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(connect.call_args.kwargs["attempts"], 12)
+
+    def test_short_options_match_long_connection_options(self):
+        relay = {"CountryLong": "Japan", "CountryShort": "JP"}
+        with (
+            patch.object(vpn, "fetch_vpn_servers", return_value=[relay]),
+            patch.object(vpn, "connect_to_country") as connect,
+        ):
+            result = CliRunner().invoke(
+                vpn.app,
+                [
+                    "-c",
+                    "JP",
+                    "-a",
+                    "7",
+                    "-b",
+                    "1",
+                    "-m",
+                    "0",
+                    "-t",
+                    "-T",
+                    "native",
+                    "-D",
+                ],
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(connect.call_args.args[2:5], (1, 0.0, True))
+        self.assertEqual(connect.call_args.kwargs["attempts"], 7)
+
+    def test_old_generated_settings_cannot_enable_automatic_measurements(self):
+        config.initialize()
+        config.config_file().write_text('{"bench": 10, "min_speed": 3.0}')
+        relay = {"CountryLong": "Japan", "CountryShort": "JP"}
+        with (
+            patch.object(vpn, "fetch_vpn_servers", return_value=[relay]),
+            patch.object(vpn, "connect_to_country") as connect,
+        ):
+            result = CliRunner().invoke(vpn.app, ["--country", "JP"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(connect.call_args.args[2:5], (0, 0.0, False))
+
+    def test_generated_configuration_has_no_auto_measurement_preferences(self):
+        config.initialize()
+        self.assertEqual(
+            set(json.loads(config.config_file().read_text())),
+            {"attempts", "tuning", "strict_discovery"},
+        )
+
+    def test_interactive_connection_does_not_promise_a_benchmark(self):
+        relay = {"CountryLong": "Japan", "CountryShort": "JP", "Speed": "100"}
+        with (
+            patch.object(vpn, "fetch_vpn_servers", return_value=[relay]),
+            patch.object(vpn, "connect_to_country") as connect,
+            patch.object(vpn, "load_bench_cache", return_value={}),
+        ):
+            result = CliRunner().invoke(vpn.app, [], input="1\n")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("no benchmark", result.output)
+        self.assertEqual(connect.call_args.kwargs["bench"], 0)
+        self.assertEqual(connect.call_args.kwargs["min_speed"], 0)
+
+    def test_status_observes_active_route_without_starting_a_measurement(self):
+        route = probes.Route("tailscale0", "100.82.95.70", "")
+        with (
+            patch.object(vpn.probes, "active_route", return_value=route),
+            patch.object(vpn.probes, "public_ip", return_value="1.2.3.4"),
+            patch.object(
+                vpn.probes,
+                "geolocate",
+                return_value={
+                    "country": "France",
+                    "country_code": "FR",
+                    "city": "Paris",
+                    "isp": "Example ISP",
+                },
+            ),
+            patch.object(vpn.probes, "measure_active_route") as measure,
+        ):
+            result = CliRunner().invoke(vpn.app, ["status"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("tailscale0", result.output)
+        self.assertIn("1.2.3.4", result.output)
+        measure.assert_not_called()
+
+    def test_status_measures_only_when_explicitly_requested(self):
+        route = probes.Route("wlp0s20f3", "192.0.2.1", "192.0.2.254")
+        measured = probes.Measurement(
+            "VERIFIED",
+            mbps=42.0,
+            bytes_received=1_000_000,
+            elapsed_s=0.2,
+            endpoint="https://example.test/download",
+        )
+        with (
+            patch.object(vpn.probes, "active_route", return_value=route),
+            patch.object(vpn.probes, "public_ip", return_value="1.2.3.4"),
+            patch.object(vpn.probes, "geolocate", return_value={}),
+            patch.object(
+                vpn.probes, "measure_active_route", return_value=measured
+            ) as measure,
+            patch.object(
+                vpn.probes, "measure_upload_active_route", return_value=measured
+            ) as upload,
+        ):
+            result = CliRunner().invoke(vpn.app, ["status", "-s", "-n", "4"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("42.00 Mbps", result.output)
+        measure.assert_called_once_with(4)
+        upload.assert_called_once_with(4)
+
+
+class ConnectionBehaviorTests(unittest.TestCase):
+    def relay(self):
+        return {
+            "IP": "1.2.3.4",
+            "Speed": "100",
+            "OpenVPN_ConfigData_Base64": base64.b64encode(
+                b"client\nproto tcp\nremote 1.2.3.4 443\n"
+            ).decode(),
+        }
+
+    def test_normal_connection_never_calls_measurement_or_ip_services(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(
+                vpn.probes,
+                "public_ip",
+                side_effect=AssertionError("Unexpected IP service"),
+            ),
+            patch.object(
+                vpn.probes, "measure", side_effect=AssertionError("Unexpected transfer")
+            ),
+            patch.object(
+                vpn, "_bench_one", side_effect=AssertionError("Unexpected benchmark")
+            ),
+            patch.object(vpn, "_run_session", return_value=True) as connect,
+        ):
+            vpn._connect_to_country("Japan", [self.relay()], 0, 0, False, directory)
+            connect.assert_called_once()
+
+    def test_historical_score_order_overrides_port_and_advertised_speed(self):
+        high_score = dict(
+            self.relay(),
+            IP="2.3.4.5",
+            Score="100",
+            Speed="1",
+            priority=10,
+            OpenVPN_ConfigData_Base64=base64.b64encode(
+                b"client\nproto tcp\nremote 2.3.4.5 1223\n"
+            ).decode(),
+        )
+        high_reported_speed = dict(
+            self.relay(), Score="1", Speed="9999999999", priority=1
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(vpn, "_run_session", return_value=True) as connect,
+        ):
+            vpn._connect_to_country(
+                "Japan", [high_reported_speed, high_score], 0, 0, False, directory
+            )
+        self.assertEqual(connect.call_args.args[0]["IP"], "2.3.4.5")
+
+    def test_requested_relay_attempt_budget_is_respected(self):
+        servers = [
+            dict(self.relay(), IP=f"1.2.3.{n}", Score=str(n)) for n in range(1, 5)
+        ]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(vpn, "_run_session", return_value=False) as connect,
+            vpn.console.capture() as output,
+        ):
+            vpn._connect_to_country(
+                "Japan", servers, 0, 0, False, directory, attempts=2
+            )
+        self.assertEqual(connect.call_count, 2)
+        self.assertIn("All 2 connection attempts failed", output.get())
+        self.assertIn("4 relays were listed", output.get())
+
+    def test_normal_session_waits_without_a_speed_probe(self):
+        process = Mock()
+        with (
+            patch.object(vpn, "_openvpn_start", return_value=(process, "cfg", "creds")),
+            patch.object(vpn, "_wait_connected", return_value=True),
+            patch.object(
+                vpn.probes, "measure", side_effect=AssertionError("Unexpected transfer")
+            ),
+            patch.object(vpn, "_cleanup_session") as cleanup,
+            vpn.console.capture() as output,
+        ):
+            self.assertFalse(vpn._run_session(self.relay(), "/unused", "Japan", 0))
+        process.wait.assert_called_once()
+        cleanup.assert_called_once()
+        self.assertIn("OPENVPN TUNNEL ESTABLISHED", output.get())
+        self.assertNotIn("HTTPS EGRESS VERIFIED", output.get())
+
+    def test_explicit_benchmark_still_runs_and_test_only_never_connects(self):
+        relay = self.relay()
+
+        def benchmark(server, directory):
+            server["_last_result"] = {"status": "VERIFIED"}
+            return 2.5
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(vpn.probes, "public_ip", return_value="9.9.9.9"),
+            patch.object(vpn, "_bench_one", side_effect=benchmark) as bench,
+            patch.object(vpn, "_run_session") as connect,
+            patch.object(vpn, "load_bench_cache", return_value={}),
+            patch.object(vpn, "save_bench_cache"),
+            patch.object(vpn, "_measurement_key", return_value="key"),
+        ):
+            vpn._connect_to_country("Japan", [relay], 1, 0, True, directory)
+        bench.assert_called_once()
+        connect.assert_not_called()
+
+    def test_explicit_monitor_probes_only_after_its_interval(self):
+        process = Mock()
+        process.poll.return_value = None
+        with (
+            patch.object(vpn, "_openvpn_start", return_value=(process, "cfg", "creds")),
+            patch.object(vpn, "_wait_connected", return_value=True),
+            patch.object(vpn.time, "sleep") as delay,
+            patch.object(
+                vpn.probes,
+                "measure",
+                return_value=probes.Measurement("VERIFIED", mbps=0.1),
+            ) as measure,
+            patch.object(vpn, "_cleanup_session"),
+        ):
+            self.assertFalse(vpn._run_session(self.relay(), "/unused", "Japan", 1))
+        self.assertEqual(measure.call_count, 2)
+        self.assertEqual(delay.call_count, 2)
+
 
 class ProbeTests(unittest.TestCase):
+    def test_active_route_measurement_is_not_limited_to_tun(self):
+        data = {"http_code": 200, "size_download": 1_000_000, "time_total": 2}
+        result = subprocess.CompletedProcess([], 28, json.dumps(data), "timeout")
+        with (
+            patch.object(probes, "active_route", return_value=probes.Route("wg0")),
+            patch.object(probes, "public_ip", return_value="1.2.3.4"),
+            patch.object(probes, "_curl", return_value=result) as curl,
+        ):
+            measured = probes.measure_active_route()
+        self.assertEqual(measured.mbps, 4)
+        self.assertIn("wg0", curl.call_args.args[0])
+
+    def test_upload_measurement_posts_only_in_memory_to_active_route(self):
+        data = {"http_code": 200, "size_upload": 1_000_000, "time_total": 2}
+        result = subprocess.CompletedProcess([], 0, json.dumps(data), "")
+        with (
+            patch.object(probes, "active_route", return_value=probes.Route("wg0")),
+            patch.object(probes, "_curl", return_value=result) as curl,
+        ):
+            measured = probes.measure_upload_active_route()
+        self.assertEqual(measured.mbps, 4)
+        self.assertIn("POST", curl.call_args.args[0])
+        self.assertIn("wg0", curl.call_args.args[0])
+        self.assertEqual(len(curl.call_args.args[2]), probes.UPLOAD_BYTES)
+
     def test_no_tunnel_no_measurement(self):
         with patch.object(
             probes, "tunnel_interface", side_effect=ConnectionError("not tun")
@@ -339,11 +617,32 @@ class DiscoveryTests(unittest.TestCase):
                     self.response(),
                 ],
             ) as get,
+            vpn.console.capture() as output,
         ):
             servers = vpn.fetch_vpn_servers()
             self.assertEqual(len(servers), 1)
             self.assertTrue(get.call_args_list[0].args[2])
             self.assertEqual(get.call_args_list[1].args[0], "http://b.test")
+        self.assertNotIn("Mirror unavailable", output.get())
+        self.assertIn("HTTP (not authenticated)", output.get())
+
+    def test_default_discovery_does_not_probe_https_before_working_mirror(self):
+        with patch.object(vpn, "_get_bounded", return_value=self.response()) as get:
+            vpn.fetch_vpn_servers()
+        get.assert_called_once()
+        self.assertEqual(get.call_args.args[0], "http://130.158.6.82/api/iphone/")
+
+    def test_all_mirror_failures_are_reported(self):
+        with (
+            patch.object(vpn, "VPN_GATE_URLS", ["http://a.test", "https://b.test"]),
+            patch.object(vpn, "_get_bounded", side_effect=requests.Timeout("failed")),
+            vpn.console.capture() as output,
+            self.assertRaises(SystemExit),
+        ):
+            vpn.fetch_vpn_servers()
+        self.assertIn("http://a.test", output.get())
+        self.assertIn("https://b.test", output.get())
+        self.assertIn("Discovery failed", output.get())
 
     def test_strict_discovery_does_not_fall_back_to_http(self):
         with (

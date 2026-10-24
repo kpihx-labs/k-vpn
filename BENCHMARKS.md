@@ -1,5 +1,19 @@
 # Benchmark synthesis
 
+## Authentication regression correction, 2026-10-24
+
+The historical runs below used a client path that omitted VPN Gate's public
+vpn/vpn credentials when the profile lacked auth-user-pass. This was not
+equivalent to the working f6093d8 client and invalidates interpreting those
+negative results as a ranking of the corrected client's relay availability.
+Positive historical transfers remain observations, not current performance claims.
+
+Restoring the historical credentials established a tunnel on 219.100.37.109,
+which had returned AUTH_FAILED without them in the user's log. A bounded HTTPS
+check returned exit 219.100.37.239, then the test tunnel was closed. No throughput
+benchmark or bulk measurement was performed. Historical Score-first selection
+was also restored; no new fleet-wide performance ranking is claimed.
+
 This is the single benchmark record, consolidating the former Markdown and JSON
 reports. Tests were performed on KpihX-Ubuntu over eduroam on 2026-10-23/24.
 They are historical observations, not a current relay catalogue or speed promise.

@@ -26,7 +26,9 @@ from rich.table import Table
 
 from k_vpn import config, probes, profiles
 
-app = typer.Typer(help="k-vpn: Automated VPN Gate Connector")
+app = typer.Typer(
+    help="k-vpn: Automated VPN Gate Connector", invoke_without_command=True
+)
 console = Console()
 
 
@@ -42,19 +44,16 @@ class AuthenticationRequired(RuntimeError):
 
 VPN_GATE_DIRECT_IPS = [
     "http://130.158.6.82/api/iphone/",
-    "https://130.158.6.82/api/iphone/",
     "http://130.158.6.101/api/iphone/",
 ]
 
-VPN_GATE_URLS = (
-    ["https://www.vpngate.net/api/iphone/"]
-    + VPN_GATE_DIRECT_IPS
-    + [
-        "http://78.142.193.125/api/iphone/",
-        "http://p6e430ddc.chibnt01.ap.so-net.ne.jp:18708/api/iphone/",
-        "http://www.vpngate.net/api/iphone/",
-    ]
-)
+VPN_GATE_URLS = VPN_GATE_DIRECT_IPS + [
+    "http://78.142.193.125/api/iphone/",
+    "http://p6e430ddc.chibnt01.ap.so-net.ne.jp:18708/api/iphone/",
+    "http://www.vpngate.net/api/iphone/",
+    "https://www.vpngate.net/api/iphone/",
+    "https://130.158.6.82/api/iphone/",
+]
 
 # ---------------------------------------------------------------------------
 # k-vpn BOOST: verified measurements, protocol-aware tuning, bounded failover
@@ -151,16 +150,16 @@ def build_ovpn_cmd(
     These were not established by measurements and are NOT guarantees.
     AEAD is preferred; explicit legacy profile ciphers remain interoperable.
     """
-    # Do not invent password authentication for a certificate-only profile.
-    # VPN Gate's embedded client certificate/key must remain authoritative.
+    # Restore the working VPN Gate authentication from f6093d8. An omitted
+    # auth-user-pass directive does not establish that a relay rejects or does
+    # not require VPN Gate's public vpn/vpn credentials.
     with open(config_path) as profile:
         directives = [line.split("#", 1)[0].strip().split() for line in profile]
-    requests_password = any(
-        parts and parts[0] == "auth-user-pass" for parts in directives
-    )
     common = [
         "--config",
         config_path,
+        "--auth-user-pass",
+        creds_path,
         "--tls-timeout",
         "15",
         "--hand-window",
@@ -179,12 +178,7 @@ def build_ovpn_cmd(
         "--data-ciphers",
         "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305",
     ]
-    if requests_password:
-        common.extend(["--auth-user-pass", creds_path])
     if any(parts == ["cipher", "AES-128-CBC"] for parts in directives):
-        console.print(
-            "[yellow]Profile requests legacy AES-128-CBC: enabling compatibility; AEAD remains preferred.[/yellow]"
-        )
         common[common.index("--data-ciphers") + 1] += ":AES-128-CBC"
         common.extend(["--data-ciphers-fallback", "AES-128-CBC"])
     if tuning == "native":
@@ -282,6 +276,8 @@ def fetch_vpn_servers(
     }
 
     csv_content = None
+    source_url = ""
+    errors = []
     for url in VPN_GATE_URLS:
         if not allow_http and not url.startswith("https://"):
             continue
@@ -298,10 +294,7 @@ def fetch_vpn_servers(
                     and "vpn_servers" in response.text.lower()
                 ):
                     csv_content = response.text
-                    if not url.startswith("https://"):
-                        console.print(
-                            "[yellow]Warning: relay list fetched over unauthenticated HTTP (legacy compatibility). Use --strict-discovery to forbid this. Destination HTTPS is separately verified.[/yellow]"
-                        )
+                    source_url = url
                     break
                 elif response.status_code in [301, 302]:
                     location = response.headers.get("Location", "")
@@ -313,19 +306,24 @@ def fetch_vpn_servers(
                         and "vpn_servers" in response.text.lower()
                     ):
                         csv_content = response.text
-                        if not location.startswith("https://"):
-                            console.print(
-                                "[yellow]Warning: relay discovery redirected to unauthenticated HTTP.[/yellow]"
-                            )
+                        source_url = location
                         break
+                errors.append(
+                    f"{url}: HTTP {response.status_code}, no usable relay list"
+                )
         except requests.RequestException as exc:
-            console.print(f"[dim]Mirror unavailable: {url}: {type(exc).__name__}[/dim]")
+            errors.append(f"{url}: {type(exc).__name__}")
 
     if not csv_content:
+        for error in errors:
+            console.print(f"[dim]Mirror unavailable: {error}[/dim]")
         console.print(
             "[bold red]Discovery failed:[/bold red] No usable relay list. VPN reachability has not been tested."
         )
         sys.exit(1)
+
+    if source_url.startswith("http://"):
+        console.print("[dim]Relay list loaded via HTTP (not authenticated).[/dim]")
 
     lines = csv_content.splitlines()
     csv_lines = [line for line in lines if not line.startswith("*")]
@@ -350,24 +348,28 @@ def group_by_country(servers: list[dict[str, Any]]) -> dict[str, list[dict[str, 
     return grouped
 
 
-@app.command()
+@app.callback()
 def main(
+    ctx: typer.Context,
     insecure: bool = typer.Option(
         False,
         "--insecure",
         "-k",
         help="Disable API TLS verification (unsafe; does not disable DNS)",
     ),
-    bench: int | None = typer.Option(
-        None,
+    bench: int = typer.Option(
+        0,
         "--bench",
+        "-b",
         min=0,
-        help="Real-benchmark N servers after country choice (0 = skip, pure VPN Gate ranking)",
+        help="Explicitly benchmark N candidates (default: off)",
     ),
-    min_speed: float | None = typer.Option(
-        None,
+    min_speed: float = typer.Option(
+        0.0,
         "--min-speed",
-        help="Failover monitor: switch server if real speed < X Mbps (0 = off)",
+        "-m",
+        min=0,
+        help="Explicit speed monitoring threshold in Mbps (default: off)",
     ),
     country: str = typer.Option(
         "", "--country", "-c", help="Country name or ISO code, no changing menu numbers"
@@ -375,29 +377,40 @@ def main(
     test_only: bool = typer.Option(
         False,
         "--test-only",
+        "-t",
         help="Benchmark then disconnect; never leave a VPN running",
     ),
     tuning: str | None = typer.Option(
         None,
         "--tuning",
+        "-T",
         help="native (preserve profile) or balanced (experimental UDP tuning)",
     ),
     server_ip: str = typer.Option(
-        "", "--server", help="Pin a currently listed relay IP"
+        "", "--server", "-s", help="Pin a currently listed relay IP"
     ),
     strict_discovery: bool | None = typer.Option(
         None,
         "--strict-discovery/--no-strict-discovery",
+        "-d/-D",
         help="Forbid unauthenticated HTTP relay-list mirrors",
     ),
+    attempts: int | None = typer.Option(
+        None,
+        "--attempts",
+        "-a",
+        min=1,
+        help="Maximum relay connection attempts (config default: 5)",
+    ),
 ):
+    if ctx.invoked_subcommand is not None:
+        return
     try:
         settings = config.load()
     except (OSError, ValueError, TypeError) as exc:
         raise typer.BadParameter(f"Invalid configuration: {exc}") from exc
-    bench = settings.bench if bench is None else bench
-    min_speed = settings.min_speed if min_speed is None else min_speed
     tuning = settings.tuning if tuning is None else tuning
+    attempts = settings.attempts if attempts is None else attempts
     strict_discovery = (
         settings.strict_discovery if strict_discovery is None else strict_discovery
     )
@@ -439,7 +452,12 @@ def main(
         if not matched:
             raise typer.BadParameter(f"No current relay listed for {country}")
         connect_to_country(
-            matched[0]["CountryLong"], matched, bench, min_speed, test_only
+            matched[0]["CountryLong"],
+            matched,
+            bench,
+            min_speed,
+            test_only,
+            attempts=attempts,
         )
         return
 
@@ -459,7 +477,11 @@ def main(
     for idx, country_label in enumerate(sorted_countries, 1):
         country_servers = grouped_servers[country_label]
         max_speed = max([int(s.get("Speed", 0)) for s in country_servers]) / 1000000
-        measured = [cached_speed(_measurement_key(s), cache) for s in country_servers]
+        measured = (
+            [cached_speed(_measurement_key(s), cache) for s in country_servers]
+            if cache
+            else []
+        )
         real = max(measured, default=0)
         table.add_row(
             str(idx),
@@ -470,8 +492,12 @@ def main(
         )
     console.print(table)
     console.print(
-        "[dim]Advertised = VPN Gate's reported field, NOT a measurement on your line. "
-        f"A REAL speed test (--bench {bench}) runs right after you pick a country.[/dim]"
+        "[dim]Advertised = provider-reported speed, not a measurement on your line. "
+        + (
+            f"Explicit benchmark: {bench} candidates after country choice.[/dim]"
+            if bench
+            else "Choose a country to connect directly; no benchmark.[/dim]"
+        )
     )
 
     choice = Prompt.ask("\nSelect a country number (or 'q' to quit)", default="q")
@@ -488,9 +514,104 @@ def main(
                 bench=bench,
                 min_speed=min_speed,
                 test_only=test_only,
+                attempts=attempts,
             )
     except ValueError:
         console.print("[bold red]Invalid input.[/bold red]")
+
+
+@app.command()
+def status(
+    speed: bool = typer.Option(
+        False,
+        "--speed",
+        "-s",
+        help="Explicitly run short download and upload measurements on the active route",
+    ),
+    seconds: int = typer.Option(
+        6,
+        "--seconds",
+        "-n",
+        min=1,
+        max=60,
+        help="Maximum seconds for each optional transfer measurement",
+    ),
+):
+    """Show current network path, public IP and best-effort location."""
+    try:
+        route = probes.active_route()
+        exit_ip = probes.public_ip(route.device)
+        try:
+            location = probes.geolocate(exit_ip, route.device)
+        except ConnectionError as exc:
+            location = {
+                "country": "unavailable",
+                "country_code": "",
+                "city": "",
+                "isp": str(exc),
+            }
+    except (ConnectionError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        console.print(
+            f"[bold red]Unable to inspect the active IPv4 route:[/bold red] {exc}"
+        )
+        raise typer.Exit(1) from exc
+
+    table = Table(title="Current IPv4 Network Status", show_header=False)
+    table.add_column("Property", style="cyan")
+    table.add_column("Value")
+    table.add_row("Active interface", route.device)
+    table.add_row("Local IPv4", route.source_ip or "not reported")
+    table.add_row("Gateway", route.gateway or "point-to-point or not reported")
+    table.add_row("Public IPv4", exit_ip)
+    country = " ".join(
+        value
+        for value in (location.get("country", ""), location.get("country_code", ""))
+        if value
+    )
+    table.add_row(
+        "Location (indicative)",
+        ", ".join(value for value in (country, location.get("city", "")) if value)
+        or "unavailable",
+    )
+    table.add_row("Network", location.get("isp", "") or "unavailable")
+    console.print(table)
+
+    if not speed:
+        console.print(
+            "[dim]No transfer measurement. Add --speed to measure download and upload.[/dim]"
+        )
+        return
+
+    measurement = probes.measure_active_route(seconds)
+    upload = probes.measure_upload_active_route(seconds)
+    if measurement.status == "VERIFIED":
+        console.print(
+            Panel.fit(
+                f"[bold green]{measurement.mbps:.2f} Mbps[/bold green] download\n"
+                f"{measurement.bytes_received / 1_000_000:.1f} MB in {measurement.elapsed_s:.1f}s\n"
+                f"{measurement.endpoint}",
+                title="Active-route HTTP measurement",
+                border_style="green",
+            )
+        )
+    else:
+        console.print(
+            f"[yellow]Download unmeasured:[/yellow] {measurement.status} {measurement.error}"
+        )
+    if upload.status == "VERIFIED":
+        console.print(
+            Panel.fit(
+                f"[bold green]{upload.mbps:.2f} Mbps[/bold green] upload\n"
+                f"{upload.bytes_received / 1_000_000:.1f} MB in {upload.elapsed_s:.1f}s\n"
+                f"{upload.endpoint}",
+                title="Active-route HTTPS measurement",
+                border_style="green",
+            )
+        )
+    else:
+        console.print(
+            f"[yellow]Upload unmeasured:[/yellow] {upload.status} {upload.error}"
+        )
 
 
 def config_proto_label(b64_config: str) -> str:
@@ -696,27 +817,19 @@ def _run_session(
             )
             return False
         ip = server.get("IP", "Unknown")
-        verified = probes.measure(4, server.get("_baseline_ip"))
-        if verified.status not in ("VERIFIED", "EGRESS_VERIFIED"):
-            console.print(
-                f"[yellow]Tunnel initialized but egress is unverified: {verified.status} {verified.error}[/yellow]"
-            )
-            return False
-        speed_note = (
-            f"{verified.mbps:.1f} Mbps measured"
-            if verified.mbps is not None
-            else "speed unmeasured"
-        )
         console.print(
             Panel(
-                f"[bold green]HTTPS EGRESS VERIFIED[/bold green]\n{country_name} | {ip} | {speed_note}\n"
-                f"[dim]Exit {verified.exit_ip} · IPv4 only · no kill switch / no IPv6 protection[/dim]",
+                f"[bold green]OPENVPN TUNNEL ESTABLISHED[/bold green]\n{country_name} | {ip}\n"
+                "[dim]No egress/speed test performed for this connection. Ctrl-C to disconnect.[/dim]",
                 expand=False,
             )
         )
         if min_speed <= 0:
             process.wait()
             return False  # remote death should try another relay, not claim success
+        console.print(
+            f"[dim]Explicit speed monitoring enabled: threshold {min_speed} Mbps, interval 45 s.[/dim]"
+        )
         fail_streak = 0
         while process.poll() is None:
             time.sleep(45)
@@ -774,13 +887,20 @@ def _port_allowed(b64_config: str) -> bool:
 def connect_to_country(
     country_name: str,
     servers: list[dict[str, Any]],
-    bench: int = 10,
-    min_speed: float = 3.0,
+    bench: int = 0,
+    min_speed: float = 0.0,
     test_only: bool = False,
+    attempts: int = 5,
 ):
     with config.session_directory() as directory:
         return _connect_to_country(
-            country_name, servers, bench, min_speed, test_only, directory
+            country_name,
+            servers,
+            bench,
+            min_speed,
+            test_only,
+            directory,
+            attempts=attempts,
         )
 
 
@@ -791,35 +911,20 @@ def _connect_to_country(
     min_speed: float,
     test_only: bool,
     config_dir: str,
+    attempts: int = 5,
 ):
     """Rank servers, REAL-benchmark the top candidates, connect to the best
     measured one, and fail over automatically if it degrades."""
-    # Prefer web-port profiles first; no static list can prove reachability.
-    allowed = [
-        s for s in servers if _port_allowed(s.get("OpenVPN_ConfigData_Base64", ""))
-    ]
-    if allowed and len(allowed) < len(servers):
-        console.print(
-            f"[dim]Transport preference: {len(allowed)}/{len(servers)} profiles advertise "
-            "443/8443. Other ports remain candidates; only live tests decide.[/dim]"
-        )
-    # Port 443 is a preference, NOT proof of reachability and NOT a reason to
-    # discard every other relay. UDP/Web policies vary with the actual network.
-    pool = allowed + [s for s in servers if s not in allowed]
-    # Sort by protocol priority (UDP 443 first) then advertised speed
-    ranked_servers = sorted(
-        pool,
-        key=lambda s: (
-            not _port_allowed(s.get("OpenVPN_ConfigData_Base64", "")),
-            s.get("priority", 10),
-            -int(s.get("Speed", 0)),
-        ),
-    )
+    # Restore f6093d8 selection: provider Score, not transport or advertised
+    # speed. Port reachability cannot be inferred from a fixed web-port list.
+    ranked_servers = sorted(servers, key=lambda s: -int(s.get("Score", 0)))
     os.makedirs(config_dir, exist_ok=True)
-    try:
-        baseline_ip = probes.public_ip()
-    except ConnectionError:
-        baseline_ip = None
+    baseline_ip = None
+    if bench > 0 or min_speed > 0:
+        try:
+            baseline_ip = probes.public_ip()
+        except ConnectionError:
+            baseline_ip = None
     for server in ranked_servers:
         server["_baseline_ip"] = baseline_ip
 
@@ -829,7 +934,7 @@ def _connect_to_country(
         console.print(
             Panel(
                 f"[bold cyan]REAL SPEED BENCH[/bold cyan] — {len(candidates)} candidates · "
-                "measured on YOUR line (eduroam), not the CSV figure",
+                "measured on your current connection, not the provider figure",
                 border_style="cyan",
             )
         )
@@ -909,8 +1014,8 @@ def _connect_to_country(
             )
             raise typer.Exit(1)
 
-    # Connect chain: try up to 5 (best measured first), failover on failure/degradation
-    n_try = min(5, len(candidates))
+    # The budget counts relay attempts, not speed tests or every listed relay.
+    n_try = min(attempts, len(candidates))
     for i, best_server in enumerate(candidates[:n_try], 1):
         ip = best_server.get("IP", "Unknown")
         adv = int(best_server.get("Speed", 0)) / 1000000
@@ -924,7 +1029,9 @@ def _connect_to_country(
         except AuthenticationRequired as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(2) from exc
-    console.print("[bold red]All server candidates failed.[/bold red]")
+    console.print(
+        f"[bold red]All {n_try} connection attempts failed; {len(ranked_servers)} relays were listed for {country_name}.[/bold red]"
+    )
 
 
 if __name__ == "__main__":

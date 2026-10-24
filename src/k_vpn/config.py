@@ -1,7 +1,6 @@
 """XDG locations and explicit user preferences; imports never create files."""
 
 import json
-import math
 import os
 import tempfile
 from collections.abc import Iterator
@@ -12,8 +11,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
-    bench: int = 10
-    min_speed: float = 3.0
+    attempts: int = 5
     tuning: str = "native"
     strict_discovery: bool = False
 
@@ -41,17 +39,18 @@ def load() -> Settings:
     if not path.exists():
         return Settings()
     payload = json.loads(path.read_text())
-    if not isinstance(payload, dict) or set(payload) - set(asdict(Settings())):
-        raise ValueError(f"Unknown settings or invalid object in {path}")
-    settings = Settings(**payload)
-    if type(settings.bench) is not int or settings.bench < 0:
-        raise ValueError("bench must be a non-negative integer")
-    if (
-        type(settings.min_speed) not in (int, float)
-        or not math.isfinite(settings.min_speed)
-        or settings.min_speed < 0
+    # Earlier releases generated these two automatic-measurement preferences.
+    # Accept them when reading old files, but never let them trigger traffic.
+    legacy = {"bench", "min_speed"}
+    if not isinstance(payload, dict) or set(payload) - (
+        set(asdict(Settings())) | legacy
     ):
-        raise ValueError("min_speed must be a finite non-negative number")
+        raise ValueError(f"Unknown settings or invalid object in {path}")
+    settings = Settings(
+        **{key: value for key, value in payload.items() if key not in legacy}
+    )
+    if type(settings.attempts) is not int or settings.attempts < 1:
+        raise ValueError("attempts must be a positive integer")
     if settings.tuning not in ("native", "balanced"):
         raise ValueError("tuning must be native or balanced")
     if type(settings.strict_discovery) is not bool:

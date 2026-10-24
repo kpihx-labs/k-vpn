@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.0.2 - Unreleased
+
+- Add `k-vpn status`, an active-route observer independent of VPN Gate and
+  OpenVPN. It reports the active IPv4 interface, local route, public IP and
+  best-effort public location.
+- Add explicit `k-vpn status --speed [--seconds N]` for a bounded HTTP download
+  and HTTPS upload measurement on the active route. It works with direct
+  networking, OpenVPN, Tailscale or another VPN and never starts a tunnel.
+- Add short forms for every application option, including `-a` attempts, `-b`
+  benchmark, `-m` monitor threshold, `-t` test-only, `-T` tuning, `-s` server
+  or status speed, `-d/-D` strict-discovery control and status `-n` seconds.
+
+## 2.0.1 - Unreleased
+
+- Restore f6093d8's Score-first relay selection and explicit public VPN Gate
+  authentication; omission of auth-user-pass in a profile is no longer interpreted
+  as a reason to remove the previously working credentials.
+- Add --attempts N and the persistent attempts preference (default 5); failures
+  report the number actually attempted instead of implying all listed relays failed.
+
+- Restore direct connection as the normal path. No automatic benchmark, startup
+  IP/speed check or periodic download is enabled without an explicit CLI option.
+- Retire persisted bench/min_speed preferences; old generated values cannot
+  activate measurements. Keep --bench and --min-speed as invocation-only opt-ins.
+- Restore working historical discovery priority and show failed mirror details
+  only if every attempt fails. Keep a concise honest HTTP-origin notice.
+- Remove duplicate cipher chatter and the benchmark-only network name assumption.
+- Add regressions preventing implicit probes and preserving explicit measurement,
+  connection cleanup, strict HTTPS and full error diagnostics.
+
 ## 2.0.0 - 2026-10-24
 
 - On the rights holder's explicit request, change this development distribution
