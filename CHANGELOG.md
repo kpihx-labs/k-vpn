@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0 - 2026-10-24
+
+- On the rights holder's explicit request, change this development distribution
+  to AGPL-3.0-only using the canonical k-project asset and complete GNU text.
+- Update package metadata, explicit license inclusion and README consistently.
+- Published 1.2.0 and earlier MIT releases remain MIT; no retroactive revocation.
+- Release the licensing transition as a new major version without changing
+  previously granted MIT permissions.
+
 ## 1.2.0 - 2026-10-24
 
 - Move the checkout to `VPNs/k-vpn` and publish under kpihx-labs on GitHub/GitLab.

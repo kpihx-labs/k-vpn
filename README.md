@@ -116,7 +116,20 @@ HTTPS content stays encrypted to the destination; plain HTTP and traffic metadat
 can be visible at the exit. A QUIC handshake or one open port does not prove every
 VPN protocol will cross every restrictive network.
 
-## Development and release
+## License transition (2.0.0)
+
+Starting with 2.0.0, this distribution is licensed under GNU AGPL version 3 only
+(`AGPL-3.0-only`); see `LICENSE` for the complete text. The previously published
+1.2.0 and earlier MIT releases retain their MIT permissions. This transition
+does not revoke those grants or change third-party dependency licenses.
+
+AGPL permits commercial use when its obligations are met. It does not require
+every commercial user to negotiate a paid license. Its network-source provision
+is mainly relevant when a modified covered application is offered over a network;
+it does not automatically relicense a separate OpenVPN server or other programs.
+Each distribution includes the complete applicable license text.
+
+## Development commands
 
 ```bash
 make check       # global ruff/pyright, compilation and offline regressions
@@ -128,4 +141,4 @@ make publish     # PyPI; run with-env make publish in the authenticated ops pane
 
 Tests use isolated temporary directories, never live tunnels or sudo. `make push`
 fails on detached HEAD, missing remotes or a failed remote push. No secrets belong
-in the repository. MIT license; see `LICENSE`.
+in the repository. Current license: `AGPL-3.0-only`; see `LICENSE`.

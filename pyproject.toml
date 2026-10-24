@@ -1,12 +1,13 @@
 [project]
 name = "k-vpn"
-version = "1.2.0"
+version = "2.0.0"
 description = "Linux OpenVPN relay selector with verified egress, measured throughput and XDG configuration."
 readme = "README.md"
 authors = [
     { name = "KpihX" }
 ]
-license = { text = "MIT" }
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "typer>=0.9.0",
