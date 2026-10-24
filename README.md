@@ -9,10 +9,14 @@ network bypass or throughput guarantee is implied.
 
 ## Install
 
-Requirements: Linux, Python 3.12+, uv, OpenVPN, curl, iproute2 and sudo.
+Requirements: Linux, Python 3.12+, uv, OpenVPN, curl, iproute2,
+systemd-resolved (`resolvectl`) and sudo.
 
 ```bash
+sudo apt update
+sudo apt install openvpn curl iproute2 systemd-resolved
 uv tool install k-vpn
+k-vpn doctor
 
 # Development checkout, the installation used on this workstation:
 git clone git@github.com:kpihx-labs/k-vpn.git
@@ -27,15 +31,15 @@ Editable installation uses this checkout directly; moving it requires relinking.
 ## Use
 
 ```bash
-k-vpn                                      # choose a country and connect directly
+k-vpn connect                              # choose a country and connect directly
 k-vpn status                               # current route, public IP and indicative location
 k-vpn status --speed                       # explicit short download and upload measurement
-k-vpn --country JP                         # direct connection; no speed/IP probes
-k-vpn -c JP -a 15                           # try up to 15 relays, stopping on success
-k-vpn -c JP -b 6 -t                         # benchmark, then close all test tunnels
-k-vpn -c Japan -b 6 -m 0.5
-k-vpn -c JP -s 122.133.152.245 -b 1 -t
-k-vpn -c JP -b 4 -t -T balanced
+k-vpn connect --country JP                 # direct connection; no speed/IP probes
+k-vpn connect -c JP -a 15                  # try up to 15 relays, stopping on success
+k-vpn connect -c JP -b 6 -t                # benchmark, then close all test tunnels
+k-vpn connect -c Japan -b 6 -m 0.5
+k-vpn connect -c JP -s 122.133.152.245 -b 1 -t
+k-vpn connect -c JP -b 4 -t -T balanced
 ```
 
 Sudo asks for a password automatically when needed. A separate manual

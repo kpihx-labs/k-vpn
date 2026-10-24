@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0 - 2026-10-24
+
+- Require the explicit `connect` subcommand; bare invocation displays help.
+- Add read-only `doctor` and actionable missing-dependency errors before relay discovery.
+- Document system-package installation. Preserve historical Score selection and vpn/vpn authentication.
+
 ## 2.0.2 - Unreleased
 
 - Add `k-vpn status`, an active-route observer independent of VPN Gate and

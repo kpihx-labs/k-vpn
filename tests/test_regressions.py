@@ -240,6 +240,26 @@ class XDGTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(list(self.home.iterdir()), [])
 
+    def test_connect_missing_openvpn_stops_before_discovery(self):
+        with (
+            patch.object(vpn.shutil, "which", return_value=None),
+            patch.object(vpn, "fetch_vpn_servers") as fetch,
+        ):
+            result = CliRunner().invoke(vpn.app, ["connect", "-c", "JP"])
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("sudo apt install openvpn", rendered_text(result.output))
+        fetch.assert_not_called()
+
+    def test_doctor_never_invokes_sudo(self):
+        with (
+            patch.object(vpn.shutil, "which", return_value=None),
+            patch.object(vpn.subprocess, "run") as run,
+        ):
+            result = CliRunner().invoke(vpn.app, ["doctor"])
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("openvpn", result.output)
+        run.assert_not_called()
+
     def test_cli_overrides_configuration_including_zero(self):
         config.initialize()
         config.config_file().write_text('{"bench": 9, "min_speed": 4}')
@@ -250,7 +270,16 @@ class XDGTests(unittest.TestCase):
         ):
             result = CliRunner().invoke(
                 vpn.app,
-                ["--country", "JP", "--bench", "1", "--min-speed", "0", "--test-only"],
+                [
+                    "connect",
+                    "--country",
+                    "JP",
+                    "--bench",
+                    "1",
+                    "--min-speed",
+                    "0",
+                    "--test-only",
+                ],
             )
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(connect.call_args.args[2:5], (1, 0.0, True))
@@ -280,7 +309,7 @@ class XDGTests(unittest.TestCase):
             patch.object(vpn, "connect_to_country") as connect,
         ):
             result = CliRunner().invoke(
-                vpn.app, ["--country", "JP", "--attempts", "12"]
+                vpn.app, ["connect", "--country", "JP", "--attempts", "12"]
             )
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(connect.call_args.kwargs["attempts"], 12)
@@ -294,6 +323,7 @@ class XDGTests(unittest.TestCase):
             result = CliRunner().invoke(
                 vpn.app,
                 [
+                    "connect",
                     "-c",
                     "JP",
                     "-a",
@@ -320,7 +350,7 @@ class XDGTests(unittest.TestCase):
             patch.object(vpn, "fetch_vpn_servers", return_value=[relay]),
             patch.object(vpn, "connect_to_country") as connect,
         ):
-            result = CliRunner().invoke(vpn.app, ["--country", "JP"])
+            result = CliRunner().invoke(vpn.app, ["connect", "--country", "JP"])
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(connect.call_args.args[2:5], (0, 0.0, False))
 
@@ -338,7 +368,7 @@ class XDGTests(unittest.TestCase):
             patch.object(vpn, "connect_to_country") as connect,
             patch.object(vpn, "load_bench_cache", return_value={}),
         ):
-            result = CliRunner().invoke(vpn.app, [], input="1\n")
+            result = CliRunner().invoke(vpn.app, ["connect"], input="1\n")
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("no benchmark", rendered_text(result.output))
         self.assertEqual(connect.call_args.kwargs["bench"], 0)

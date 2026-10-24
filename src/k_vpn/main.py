@@ -5,6 +5,7 @@ import json
 import os
 import pwd
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -26,9 +27,7 @@ from rich.table import Table
 
 from k_vpn import config, probes, profiles
 
-app = typer.Typer(
-    help="k-vpn: Automated VPN Gate Connector", invoke_without_command=True
-)
+app = typer.Typer(help="k-vpn: Automated VPN Gate Connector", no_args_is_help=True)
 console = Console()
 
 
@@ -348,9 +347,8 @@ def group_by_country(servers: list[dict[str, Any]]) -> dict[str, list[dict[str, 
     return grouped
 
 
-@app.callback()
-def main(
-    ctx: typer.Context,
+@app.command()
+def connect(
     insecure: bool = typer.Option(
         False,
         "--insecure",
@@ -403,8 +401,16 @@ def main(
         help="Maximum relay connection attempts (config default: 5)",
     ),
 ):
-    if ctx.invoked_subcommand is not None:
-        return
+    for binary, package in (
+        ("openvpn", "openvpn"),
+        ("sudo", "sudo"),
+        ("ip", "iproute2"),
+    ):
+        if not shutil.which(binary):
+            console.print(
+                f"[red]Missing {binary}.[/red] Run: sudo apt install {package}"
+            )
+            raise typer.Exit(1)
     try:
         settings = config.load()
     except (OSError, ValueError, TypeError) as exc:
@@ -518,6 +524,47 @@ def main(
             )
     except ValueError:
         console.print("[bold red]Invalid input.[/bold red]")
+
+
+@app.command()
+def doctor() -> None:
+    """Check local prerequisites before a privileged OpenVPN connection."""
+    checks = {
+        "openvpn": "sudo apt install openvpn",
+        "curl": "sudo apt install curl",
+        "ip": "sudo apt install iproute2",
+        "resolvectl": "sudo apt install systemd-resolved",
+        "sudo": "sudo apt install sudo",
+    }
+    table = Table(title="k-vpn prerequisites", show_header=False)
+    table.add_column("Check", style="cyan")
+    table.add_column("Result")
+    missing = False
+    for binary, fix in checks.items():
+        if shutil.which(binary):
+            table.add_row(binary, "[green]OK[/green]")
+        else:
+            missing = True
+            table.add_row(binary, f"[red]MISSING[/red] · {fix}")
+    tun = Path("/dev/net/tun")
+    if tun.exists():
+        table.add_row("/dev/net/tun", "[green]OK[/green]")
+    else:
+        missing = True
+        table.add_row(
+            "/dev/net/tun", "[red]MISSING[/red] · enable the Linux TUN device"
+        )
+    if shutil.which("sudo"):
+        table.add_row(
+            "sudo authorization",
+            "will prompt on connect if needed",
+        )
+    console.print(table)
+    if missing:
+        console.print(
+            "[yellow]Install the missing package(s), then rerun `k-vpn doctor`.[/yellow]"
+        )
+        raise typer.Exit(1)
 
 
 @app.command()
